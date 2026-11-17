@@ -1,132 +1,108 @@
+# chat.py
 
+import os
 from pathlib import Path
+from dotenv import load_dotenv
 
-from langchain_ollama import OllamaEmbeddings, ChatOllama
-# ollamaEmbedding--- coverts into the numerical vector(embeddings).
-# ChatOllama --- connects application to a locally ollama LLM.
-# here we use the qwen 2.5 to generate answers.
 from langchain_chroma import Chroma
-# connects application to chromaDB
-#  chromaDB store embeddings and documents chunks 
+from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_groq import ChatGroq
+from langchain_core.prompts import ChatPromptTemplate
 
+# STEP 1: Load environment variables
 
-
-
-# define project paths 
-# Project paths
 BASE_DIR = Path(__file__).resolve().parent
 
-# __file__ returns the location of the current py file 
+load_dotenv(BASE_DIR / ".env")
 
-# .resolve() -- return the absolute path 
+api_key = os.getenv("GROQ_API_KEY")
+model_name = os.getenv("GROQ_MODEL", "openai/gpt-oss-20b")
 
-# .parent -- it return the parent directory containing py file 
+if not api_key:
+    raise ValueError("GROQ_API_KEY not found in .env")
 
-DB_PATH = BASE_DIR / "Chroma_db"
+# STEP 2: Load embeddings
 
-COLLECTION_NAME = "rag_documents"
-
-
-# 1. Initialize embedding model
-embeddings = OllamaEmbeddings(
-    model="nomic-embed-text"
+embeddings = HuggingFaceEmbeddings(
+    model_name="sentence-transformers/all-MiniLM-L6-v2"
 )
 
+# STEP 3: Load ChromaDB
 
-# 2. Connect to ChromaDB
-vectorstore = Chroma(
-    collection_name=COLLECTION_NAME,
-    persist_directory=str(DB_PATH),
-# DB_PATH is path object str() converts it into a normal string path 
+CHROMA_PATH = BASE_DIR / "chroma_db"
+
+if not CHROMA_PATH.exists():
+    raise FileNotFoundError("ChromaDB not found. Run ingest.py first.")
+
+vector_store = Chroma(
+    collection_name="rag_documents",
+    persist_directory=str(CHROMA_PATH),
     embedding_function=embeddings
 )
 
-# 3. Initialize Qwen LLM
-llm = ChatOllama(
-    model="qwen2.5:1.5b",
-    temperature=0
-    # temp = 0 makes the ans more consistent and less random. 
+# STEP 4: Create retriever
+
+retriever = vector_store.as_retriever(
+    search_kwargs={"k": 3}
 )
 
+# STEP 5: Connect Groq LLM
 
-def answer_question(question):
+llm = ChatGroq(
+    model=model_name,
+    groq_api_key=api_key,
+    temperature=0
+)
 
-    # 4. Retrieve relevant chunks
-    retrieved_docs = vectorstore.similarity_search(
-        question,
-        k=4
+# STEP 6: Create prompt
+
+prompt = ChatPromptTemplate.from_template("""
+You are an AI document assistant.
+
+Answer using only the provided context.
+
+If the answer is unavailable,
+say you don't know based on the document.
+
+Context:
+{context}
+
+Question:
+{question}
+
+Answer:
+""")
+
+# STEP 7: Ask questions
+
+while True:
+
+    question = input("\nAsk your question: ")
+
+    if question.lower() in ["exit", "quit"]:
+        print("Chat ended!")
+        break
+
+    # Retrieve relevant chunks
+    docs = retriever.invoke(question)
+
+    if not docs:
+        print("\nNo relevant information found.")
+        continue
+
+    # Combine retrieved chunks
+    context = "\n\n".join(
+        doc.page_content for doc in docs
     )
 
-    if not retrieved_docs:
-        return "No relevant information found in the PDF.", []
+    # Prepare prompt
+    formatted_prompt = prompt.invoke({
+        "context": context,
+        "question": question
+    })
 
-    # 5. Prepare context
-    context = ""
+    # Generate answer
+    response = llm.invoke(formatted_prompt)
 
-    sources = []
-
-    for doc in retrieved_docs:
-
-        context += doc.page_content + "\n\n"
-
-        page = doc.metadata.get("page", "Unknown")
-
-        if isinstance(page, int):
-            page = page + 1
-
-        source = {
-            "page": page,
-            "file": Path(
-                doc.metadata.get("source", "Unknown")
-            ).name
-        }
-
-        if source not in sources:
-            sources.append(source)
-
-    # 6. Create prompt
-    prompt = f"""
-    You are a helpful PDF question-answering assistant.
-
-    Answer the question using ONLY the provided context.
-
-    If the answer is not available in the context,
-    clearly say that the information is not available
-    in the provided PDF.
-
-    Do not make up information.
-
-    Context:
-    {context}
-
-    Question:
-    {question}
-
-    Answer:
-    """
-
-    # 7. Generate answer using Qwen
-    response = llm.invoke(prompt)
-
-    return response.content, sources
-
-
-if __name__ == "__main__":
-
-    print("PDF RAG Chatbot")
-
-    while True:
-
-        question = input("\nAsk a question (type exit to stop): ")
-
-        if question.lower() == "exit":
-            break
-
-        answer, sources = answer_question(question)
-
-        print("\nAnswer:")
-        print(answer)
-
-        print("\nSources:")
-        for source in sources:
-            print(source)
+    print("\nAI Answer:")
+    print(response.content)

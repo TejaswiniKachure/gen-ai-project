@@ -1,94 +1,94 @@
+# ingest.py
 
 from pathlib import Path
 
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_ollama import OllamaEmbeddings
+from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_chroma import Chroma
 
-import chromadb
 
+# STEP 1: Project paths
 
-# Project paths
 BASE_DIR = Path(__file__).resolve().parent
 
-PDF_PATH = BASE_DIR / "data" / "sample.pdf"
-DB_PATH = BASE_DIR / "Chroma_db"
+PDF_PATH = BASE_DIR / "data" / "book.pdf"
+CHROMA_PATH = BASE_DIR / "chroma_db"
 
-COLLECTION_NAME = "rag_documents"
-
-
-def ingest_documents():
-
-    # 1. Check PDF file
-    if not PDF_PATH.exists():
-        raise FileNotFoundError(f"PDF not found: {PDF_PATH}")
-
-    print("Loading PDF...")
-
-    # 2. Load PDF
-    loader = PyPDFLoader(str(PDF_PATH))
-    documents = loader.load()
-
-    print(f"Total pages loaded: {len(documents)}")
-
-    # 3. Split documents into chunks
-    text_splitter = RecursiveCharacterTextSplitter(
-        chunk_size=500,
-        # maximum target chunk length in characters
-        chunk_overlap=100
-        # Reapeated text between neighboring chunks
-
-    )
-
-    chunks = text_splitter.split_documents(documents)
-
-    print(f"Total chunks created: {len(chunks)}")
-
-    if not chunks:
-        raise ValueError("No text found in PDF.")
-
-    # 4. Generate embeddings using Ollama
-    embeddings = OllamaEmbeddings(
-        model="nomic-embed-text"
-    )
-    # ollama embeddings-- convert chunks into numerical vectors
+COLLECTION_NAME = "rag_documents_v2"
 
 
-    # 5. Remove old collection if it exists
-    client = chromadb.PersistentClient(
-        path=str(DB_PATH)
-    )
+# STEP 2: Load PDF
 
-    existing = [
-        collection.name
-        for collection in client.list_collections()
-    ]
+if not PDF_PATH.exists():
+    raise FileNotFoundError(f"PDF not found: {PDF_PATH}")
 
-    if COLLECTION_NAME in existing:
-        client.delete_collection(
-            name=COLLECTION_NAME
-        )
+loader = PyPDFLoader(str(PDF_PATH))
+documents = loader.load()
 
-    # 6. Store chunks and embeddings in ChromaDB
+print("Total pages:", len(documents))
 
-    #  chroma.from_documents()--- creates and store vector records
-
-    vectorstore = Chroma.from_documents(
-        documents=chunks,
-        embedding=embeddings,
-        collection_name=COLLECTION_NAME,
-        persist_directory=str(DB_PATH)
-    )
-
-    # persist_directory -- saves the database locally 
-
-    print("Embeddings generated successfully!")
-    print("Documents stored in ChromaDB.")
-
-    print(f"Database location: {DB_PATH}")
+# Check extracted text
+for i, doc in enumerate(documents[:2]):
+    print(f"\nPage {i + 1}:")
+    print(doc.page_content[:500])
 
 
-if __name__ == "__main__":
-    ingest_documents()
+# STEP 3: Remove empty pages
 
+documents = [
+    doc for doc in documents
+    if doc.page_content.strip()
+]
+
+print("\nNon-empty pages:", len(documents))
+
+
+# STEP 4: Split into chunks
+
+text_splitter = RecursiveCharacterTextSplitter(
+    chunk_size=1000,
+    chunk_overlap=200,
+    separators=["\n\n", "\n", ". ", " ", ""]
+)
+
+chunks = text_splitter.split_documents(documents)
+
+print("\nTotal chunks:", len(chunks))
+
+for i, chunk in enumerate(chunks[:3]):
+    print(f"\nChunk {i + 1}:")
+    print(chunk.page_content[:300])
+    print("Metadata:", chunk.metadata)
+
+
+# STEP 5: Load embedding model
+
+embeddings = HuggingFaceEmbeddings(
+    model_name="sentence-transformers/all-MiniLM-L6-v2"
+)
+
+
+# STEP 6: Rebuild the ChromaDB collection
+
+# This removes the previous version of this collection.
+# It does not delete other ChromaDB collections.
+
+old_db = Chroma(
+    collection_name=COLLECTION_NAME,
+    persist_directory=str(CHROMA_PATH),
+    embedding_function=embeddings
+)
+
+old_db.delete_collection()
+
+vector_store = Chroma.from_documents(
+    documents=chunks,
+    embedding=embeddings,
+    persist_directory=str(CHROMA_PATH),
+    collection_name=COLLECTION_NAME
+)
+
+print("\nPDF indexed successfully!")
+print("Total stored chunks:", vector_store._collection.count())
+print("Database:", CHROMA_PATH)
