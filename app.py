@@ -84,12 +84,22 @@ with st.spinner("Loading Gemini embeddings..."):
 # STEP 4: LOAD CHROMADB
 # ==========================================
 
+from ingest_cloud import ingest_documents
+
 CHROMA_PATH = BASE_DIR / "Chroma_db"
 COLLECTION_NAME = "rag_documents"
 
-if not CHROMA_PATH.exists():
-    st.error("ChromaDB not found. Run ingest_cloud.py first.")
-    st.stop()
+# Automatically create ChromaDB if it does not exist
+if not CHROMA_PATH.exists() or not any(CHROMA_PATH.iterdir()):
+
+    with st.spinner("Creating ChromaDB using Gemini embeddings..."):
+        try:
+            ingest_documents()
+            st.success("ChromaDB created successfully!")
+
+        except Exception as e:
+            st.error(f"Database creation failed: {e}")
+            st.stop()
 
 
 @st.cache_resource
